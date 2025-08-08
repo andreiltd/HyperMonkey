@@ -1,0 +1,1448 @@
+From f193d81d58a56026435a8faf120b3bcb5b860f2e Mon Sep 17 00:00:00 2001
+From: Tomasz Andrzejak <andreiltd@gmail.com>
+Date: Fri, 8 Aug 2025 15:20:16 +0200
+Subject: [PATCH] feat: port to X86 baremetal target
+
+---
+ .cargo/config.toml                            |  6 ++
+ Cargo.toml                                    |  3 +-
+ mozjs-sys/Cargo.toml                          |  9 +--
+ mozjs-sys/build.rs                            | 30 ++++++++--
+ mozjs-sys/makefile.cargo                      | 54 ++++++++++++++++++
+ .../mozjs/build/moz.configure/flags.configure |  4 +-
+ .../mozjs/build/moz.configure/init.configure  |  2 +
+ .../build/moz.configure/toolchain.configure   |  2 +-
+ mozjs-sys/mozjs/js/moz.configure              |  2 +-
+ .../mozjs/js/src/frontend/FrontendContext.cpp |  4 +-
+ mozjs-sys/mozjs/js/src/gc/Memory.cpp          | 22 ++++----
+ .../js/src/jit/ProcessExecutableMemory.cpp    |  6 +-
+ mozjs-sys/mozjs/js/src/moz.build              |  5 ++
+ .../js/src/threading/ConditionVariable.h      |  2 +-
+ mozjs-sys/mozjs/js/src/util/CompleteFile.cpp  |  8 +++
+ mozjs-sys/mozjs/js/src/util/NativeStack.cpp   |  4 +-
+ .../mozjs/js/src/vm/ArrayBufferObject.cpp     | 12 ++--
+ .../mozjs/js/src/vm/CharacterEncoding.cpp     |  4 +-
+ mozjs-sys/mozjs/js/src/vm/Runtime.cpp         |  4 +-
+ .../mozjs/js/src/vm/SharedArrayObject.cpp     |  2 +-
+ .../mozjs/js/src/vm/TypedArrayObject.cpp      |  2 +-
+ .../mozjs/js/src/vm/UbiNodeShortestPaths.cpp  |  1 +
+ .../mozjs/js/src/wasm/WasmSignalHandlers.cpp  |  2 +-
+ mozjs-sys/mozjs/memory/build/malloc_decls.h   |  1 +
+ mozjs-sys/mozjs/memory/mozalloc/mozalloc.cpp  |  3 +
+ .../mozjs/memory/mozalloc/mozalloc_abort.cpp  |  4 +-
+ mozjs-sys/mozjs/mfbt/Assertions.h             |  8 +--
+ mozjs-sys/mozjs/mfbt/Poison.cpp               |  8 ++-
+ mozjs-sys/mozjs/mfbt/RandomNum.cpp            |  2 +-
+ mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h  |  4 +-
+ mozjs-sys/mozjs/mfbt/ThreadLocal.h            |  6 +-
+ .../baseprofiler/core/ProfilerUtils.cpp       |  2 +-
+ .../baseprofiler/public/BaseProfilerUtils.h   |  2 +-
+ .../mozjs/mozglue/misc/MmapFaultHandler.cpp   |  2 +-
+ .../mozjs/mozglue/misc/MmapFaultHandler.h     |  2 +-
+ .../mozglue/misc/MutexPlatformData_noop.h     |  4 +-
+ .../mozglue/misc/PlatformConditionVariable.h  |  4 +-
+ mozjs-sys/mozjs/mozglue/misc/PlatformMutex.h  |  4 +-
+ mozjs-sys/mozjs/mozglue/misc/Printf.cpp       |  1 +
+ mozjs-sys/mozjs/mozglue/misc/SSE.cpp          | 47 ++++++++--------
+ .../mozjs/mozglue/misc/TimeStamp_metal.cpp    | 53 ++++++++++++++++++
+ .../mozjs/mozglue/misc/TimeStamp_posix.cpp    |  7 ++-
+ mozjs-sys/mozjs/mozglue/misc/moz.build        |  9 +++
+ mozjs-sys/mozjs/nsprpub/configure.in          |  8 +++
+ .../mozbuild/mozbuild/configure/constants.py  |  3 +
+ mozjs-sys/src/jsgc.rs                         | 10 ++--
+ mozjs-sys/src/jsglue.cpp                      |  4 +-
+ mozjs-sys/src/jsimpls.rs                      |  6 +-
+ mozjs-sys/src/jsval.rs                        |  8 +--
+ mozjs-sys/src/lib.rs                          |  3 +-
+ mozjs-sys/src/trace.rs                        | 56 +++++++------------
+ 51 files changed, 316 insertions(+), 145 deletions(-)
+ create mode 100644 mozjs-sys/mozjs/mozglue/misc/TimeStamp_metal.cpp
+
+diff --git a/.cargo/config.toml b/.cargo/config.toml
+index 2533e8321..0cf6a86b4 100644
+--- a/.cargo/config.toml
++++ b/.cargo/config.toml
+@@ -6,3 +6,9 @@ linker = "lld-link.exe"
+ 
+ [target.aarch64-pc-windows-msvc]
+ linker = "lld-link.exe"
++
++[target.x86_64-unknown-none]
++rustflags = [
++  "-C",
++  "code-model=small",
++]
+diff --git a/Cargo.toml b/Cargo.toml
+index 0406268a9..0020aff4c 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -10,7 +10,6 @@ edition = "2021"
+ [workspace.dependencies]
+ cc = "1"
+ libc = "0.2"
+-bindgen = { version = "0.71.1", default-features = false, features = [
++bindgen = { version = "0.72.0", default-features = false, features = [
+     "runtime",
+-    "which-rustfmt",
+ ] }
+diff --git a/mozjs-sys/Cargo.toml b/mozjs-sys/Cargo.toml
+index cdec66750..48c822cc3 100644
+--- a/mozjs-sys/Cargo.toml
++++ b/mozjs-sys/Cargo.toml
+@@ -31,11 +31,12 @@ oom_with_hook = []
+ [dependencies]
+ libc.workspace = true
+ # SM depends on them and we provide them using cargo
+-libz-sys = "1.1.19"
+-encoding_c = "0.9.8"
+-encoding_c_mem = "0.2.6"
++libz-sys = { version = "1.1.22", default-features = false, features = ["static"], path="../../libz-sys" }
++encoding_c = { version =  "0.9.8", path = "../../encoding_c" }
++encoding_c_mem = { version = "0.2.6", path = "../../encoding_c_mem" }
+ # unicode-bidi-ffi = { path = "./mozjs/intl/bidi/rust/unicode-bidi-ffi" }
+-icu_capi = "1.4.0" # keep in sync with intl/icu_capi/Cargo.toml
++icu_capi = { version = "1.4.0", default_features = false, features = ["compiled_data", "default_components"] } # keep in sync with intl/icu_capi/Cargo.toml
++hashbrown = { version = "0.14", default-features = false, features = ["alloc"] }
+ 
+ [build-dependencies]
+ bindgen.workspace = true
+diff --git a/mozjs-sys/build.rs b/mozjs-sys/build.rs
+index 44d48be62..2dffde50e 100644
+--- a/mozjs-sys/build.rs
++++ b/mozjs-sys/build.rs
+@@ -274,6 +274,7 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
+ 
+     let mut builder = bindgen::builder()
+         .rust_target(minimum_rust_target())
++        .use_core()
+         .header(target.path())
+         // Translate every enum with the "rustified enum" strategy. We should
+         // investigate switching to the "constified module" strategy, which has
+@@ -293,6 +294,24 @@ fn build_bindings(build_dir: &Path, target: BuildTarget) {
+             .allowlist_recursively(false);
+     }
+ 
++    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
++    let base_path = PathBuf::from(&manifest_dir);
++
++    let third_party_path = base_path.parent().unwrap().parent().unwrap();
++    let libcxx_path_top = third_party_path.join("libcxx/include/x86_64-unknown-none/c++/v1");
++    let libcxx_path_btm = third_party_path.join("libcxx/include/c++/v1");
++    let libc_path = third_party_path.join("libc/include");
++
++    println!("third_party_path: {}", third_party_path.display());
++
++    builder = builder.clang_args(&["-D", "__metal__=1"]);
++    builder = builder.clang_args(&["-D", "_GNU_SOURCE=1"]);
++    builder = builder.clang_args(&["-D", "_POSIX_C_SOURCE=200809L"]);
++    builder = builder.clang_args(&["-D", "_POSIX_MONOTONIC_CLOCK=1"]);
++    builder = builder.clang_args(&["-I", &libcxx_path_top.to_string_lossy()]);
++    builder = builder.clang_args(&["-I", &libcxx_path_btm.to_string_lossy()]);
++    builder = builder.clang_args(&["-I", &libc_path.to_string_lossy()]);
++
+     for path in target.include_paths(build_dir) {
+         builder = builder.clang_args(&["-I", &path]);
+     }
+@@ -376,7 +395,8 @@ fn link_static_lib_binaries(build_dir: &Path) {
+         if target.contains("gnu") {
+             println!("cargo:rustc-link-lib=stdc++");
+         }
+-    } else if target.contains("apple") || target.contains("freebsd") || target.contains("ohos") {
++
++    } else if target.contains("apple") || target.contains("freebsd") || target.contains("ohos") || target.contains("none") {
+         println!("cargo:rustc-link-lib=c++");
+     } else {
+         println!("cargo:rustc-link-lib=stdc++");
+@@ -445,12 +465,10 @@ fn cc_flags(bindgen: bool) -> Vec<&'static str> {
+             "-xc++",
+             "-fPIC",
+             "-fno-rtti",
++            "-fno-exceptions",
+             "-fno-sized-deallocation",
+-            "-Wno-c++0x-extensions",
+-            "-Wno-return-type-c-linkage",
+             "-Wno-unused-parameter",
+             "-Wno-invalid-offsetof",
+-            "-Wno-unused-private-field",
+         ]);
+ 
+         if env::var_os("CARGO_FEATURE_PROFILEMOZJS").is_some() {
+@@ -733,6 +751,9 @@ impl BuildTarget {
+     fn blacklist_functions(self) -> &'static [&'static str] {
+         match self {
+             BuildTarget::JSApi => &[
++                "JS::CompileUtf8File",
++                "JS::PrintError",
++                "JS::PrintError1",
+                 "JS::CopyAsyncStack",
+                 "JS::CreateError",
+                 "JS::DecodeMultiStencilsOffThread",
+@@ -819,7 +840,6 @@ impl BuildTarget {
+     fn module_raw_lines(self) -> &'static [(&'static str, &'static str)] {
+         match self {
+             BuildTarget::JSApi => &[
+-                ("root", "pub type FILE = ::libc::FILE;"),
+                 ("root::JS", "pub type Heap<T> = crate::jsgc::Heap<T>;"),
+                 ("root::JS", "pub type Rooted<T> = crate::jsgc::Rooted<T>;"),
+             ],
+diff --git a/mozjs-sys/makefile.cargo b/mozjs-sys/makefile.cargo
+index f96ff430f..6314f28e5 100644
+--- a/mozjs-sys/makefile.cargo
++++ b/mozjs-sys/makefile.cargo
+@@ -1,6 +1,7 @@
+ # We need to use bash here, as there are a couple of targets below
+ # that use [[ to do conditional things
+ SHELL := bash
++CCACHE := ccache
+ 
+ # Default flags
+ CONFIGURE_FLAGS := \
+@@ -104,6 +105,55 @@ else
+ 
+ endif
+ 
++ifeq ($(findstring -none,$(TARGET)),-none)
++      CC := $(PWD)/third-party/guest-toolchain/clang -D__metal__
++      CXX := $(PWD)/third-party/guest-toolchain/clang -D__metal__
++      CPP := $(PWD)/third-party/guest-toolchain/clang -E
++      AR := llvm-ar
++      AS := clang
++
++      CLANG_INCLUDE := $(shell $(PWD)/third-party/guest-toolchain/clang -print-file-name=include)
++
++      CC_FOR_BUILD := clang
++      CXX_FOR_BUILD := clang++
++      HOST_CC := clang
++      HOST_CXX := clang++
++      CFLAGS += -nostdinc
++      CFLAGS += -fno-stack-protector
++      CFLAGS += -mstack-probe-size=4096
++      CFLAGS += -mno-red-zone
++      CFLAGS += -mcmodel=small
++      CFLAGS += -I$(PWD)/third-party/libc/include
++      CFLAGS += -I$(CLANG_INCLUDE)
++
++      CXXFLAGS += -nostdinc
++      CXXFLAGS += -nostdinc++
++      CXXFLAGS += -fno-stack-protector
++      CXXFLAGS += -mstack-probe-size=4096
++      CXXFLAGS += -mno-red-zone
++      CXXFLAGS += -mcmodel=small
++      CXXFLAGS += -D_GNU_SOURCE=1
++      CXXFLAGS += -D_POSIX_C_SOURCE=200809L
++      CXXFLAGS += -D_POSIX_MONOTONIC_CLOCK=1
++      CXXFLAGS += -I$(PWD)/third-party/libcxx/include/x86_64-unknown-none/c++/v1
++      CXXFLAGS += -I$(PWD)/third-party/libcxx/include/c++/v1
++      CXXFLAGS += -I$(PWD)/third-party/libc/include
++      CXXFLAGS += -I$(CLANG_INCLUDE)
++
++      CONFIGURE_FLAGS += \
++        --enable-project=js \
++        --enable-release \
++        --enable-lto=full \
++        --enable-optimize=-O3 \
++        --without-intl-api \
++        --disable-clang-plugin \
++        --disable-jit \
++        --disable-profiling \
++        --disable-wasm-moz-intgemm \
++        --enable-portable-baseline-interp \
++        $(NULL)
++endif
++
+ ifneq ($(WINDOWS),)
+ 
+ 	ifeq ($(findstring x86_64,$(TARGET)),x86_64)
+@@ -160,5 +210,9 @@ maybe-configure:
+ 	  CPP="$(CPP)" CPPFLAGS="$(CPPFLAGS)" \
+ 	  CXX="$(CXX)" CXXFLAGS="$(CXXFLAGS)" \
+ 	  AS="$(AS)" AR="$(AR)" \
++      HOST_CC="$(HOST_CC)" \
++      HOST_CXX="$(HOST_CXX)" \
++	  CC_FOR_BUILD="$(CC_FOR_BUILD)" \
++	  CXX_FOR_BUILD="$(CXX_FOR_BUILD)" \
+ 	  $(JSSRC)/configure $(strip $(CONFIGURE_FLAGS)) || (cat config.log && exit 1) ; \
+ 	fi
+diff --git a/mozjs-sys/mozjs/build/moz.configure/flags.configure b/mozjs-sys/mozjs/build/moz.configure/flags.configure
+index 302e79997..816242303 100644
+--- a/mozjs-sys/mozjs/build/moz.configure/flags.configure
++++ b/mozjs-sys/mozjs/build/moz.configure/flags.configure
+@@ -126,8 +126,8 @@ set_config("MOZ_NO_DEBUG_RTL", moz_no_debug_rtl)
+ 
+ @depends(
+     try_compile(
+-        includes=["stdio.h"],
+-        body='puts("Hello World");',
++        includes=[],
++        body='return 0;',
+         check_msg="for valid debug flags",
+         flags=debug_flags,
+         when=moz_debug,
+diff --git a/mozjs-sys/mozjs/build/moz.configure/init.configure b/mozjs-sys/mozjs/build/moz.configure/init.configure
+index 179de2592..d8d24cb83 100644
+--- a/mozjs-sys/mozjs/build/moz.configure/init.configure
++++ b/mozjs-sys/mozjs/build/moz.configure/init.configure
+@@ -547,6 +547,8 @@ def split_triplet(triplet, allow_wasi=False):
+         canonical_os = canonical_kernel = "SunOS"
+     elif os.startswith("wasi") and allow_wasi:
+         canonical_os = canonical_kernel = "WASI"
++    elif os.startswith("none"):
++        canonical_os = canonical_kernel = "none"
+     else:
+         raise ValueError("Unknown OS: %s" % os)
+ 
+diff --git a/mozjs-sys/mozjs/build/moz.configure/toolchain.configure b/mozjs-sys/mozjs/build/moz.configure/toolchain.configure
+index 5b538f0a1..a03c99355 100755
+--- a/mozjs-sys/mozjs/build/moz.configure/toolchain.configure
++++ b/mozjs-sys/mozjs/build/moz.configure/toolchain.configure
+@@ -2672,7 +2672,7 @@ def security_hardening_cflags(
+     trivial_auto_var_init = []
+ 
+     # WASI compiler doesn't support security hardening cflags
+-    if target.os == "WASI":
++    if target.os == "WASI" or target.os == "none":
+         return
+ 
+     # ----------------------------------------------------------
+diff --git a/mozjs-sys/mozjs/js/moz.configure b/mozjs-sys/mozjs/js/moz.configure
+index cccb64899..417507560 100644
+--- a/mozjs-sys/mozjs/js/moz.configure
++++ b/mozjs-sys/mozjs/js/moz.configure
+@@ -1244,7 +1244,7 @@ set_config("SIXGILL_PATH", sixgill)
+ 
+ @depends("--enable-js-shell", target_is_windows, compile_environment, target)
+ def editline(js_shell, is_windows, compile_environment, target):
+-    return js_shell and not is_windows and compile_environment and (target.os != "WASI")
++    return js_shell and not is_windows and compile_environment and (target.os != "WASI") and (target.os != "none")
+ 
+ 
+ option(
+diff --git a/mozjs-sys/mozjs/js/src/frontend/FrontendContext.cpp b/mozjs-sys/mozjs/js/src/frontend/FrontendContext.cpp
+index aeb12efe9..374a1ebeb 100644
+--- a/mozjs-sys/mozjs/js/src/frontend/FrontendContext.cpp
++++ b/mozjs-sys/mozjs/js/src/frontend/FrontendContext.cpp
+@@ -9,7 +9,7 @@
+ #ifdef _WIN32
+ #  include <windows.h>
+ #  include <process.h>  // GetCurrentThreadId
+-#else
++#elif !defined(__wasi__) && !defined(__metal__)
+ #  include <pthread.h>  // pthread_self
+ #endif
+ 
+@@ -204,6 +204,8 @@ bool FrontendContext::convertToRuntimeError(
+ static size_t GetTid() {
+ #  if defined(_WIN32)
+   return size_t(GetCurrentThreadId());
++#  elif defined(__metal__)
++  return 0;
+ #  else
+   return size_t(pthread_self());
+ #  endif
+diff --git a/mozjs-sys/mozjs/js/src/gc/Memory.cpp b/mozjs-sys/mozjs/js/src/gc/Memory.cpp
+index 8f35f833c..f386ff508 100644
+--- a/mozjs-sys/mozjs/js/src/gc/Memory.cpp
++++ b/mozjs-sys/mozjs/js/src/gc/Memory.cpp
+@@ -27,7 +27,7 @@
+ #  include <errno.h>
+ #  include <unistd.h>
+ 
+-#  if !defined(__wasi__)
++#  if !defined(__wasi__) && !defined(__metal__)
+ #    include <sys/mman.h>
+ #    include <sys/resource.h>
+ #    include <sys/stat.h>
+@@ -143,7 +143,7 @@ enum class PageAccess : DWORD {
+   ReadExecute = PAGE_EXECUTE_READ,
+   ReadWriteExecute = PAGE_EXECUTE_READWRITE,
+ };
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+ enum class PageAccess : int {
+   None = 0,
+   Read = 0,
+@@ -194,7 +194,7 @@ static inline void* MapInternal(void* desired, size_t length) {
+   DWORD flags =
+       (commit == Commit::Yes ? MEM_RESERVE | MEM_COMMIT : MEM_RESERVE);
+   region = VirtualAlloc(desired, length, flags, DWORD(prot));
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+   if (int err = posix_memalign(&region, gc::SystemPageSize(), length)) {
+     MOZ_RELEASE_ASSERT(err == ENOMEM);
+     return nullptr;
+@@ -219,7 +219,7 @@ static inline void UnmapInternal(void* region, size_t length) {
+ 
+ #ifdef XP_WIN
+   MOZ_RELEASE_ASSERT(VirtualFree(region, 0, MEM_RELEASE) != 0);
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+   free(region);
+ #else
+   if (munmap(region, length)) {
+@@ -379,7 +379,7 @@ void InitMemorySubsystem() {
+     pageSize = size_t(sysconf(_SC_PAGESIZE));
+     allocGranularity = pageSize;
+ #endif
+-#ifdef JS_64BIT
++#if defined(JS_64BIT) && !defined(__metal__)
+ #  ifdef XP_WIN
+     minValidAddress = size_t(sysinfo.lpMinimumApplicationAddress);
+     maxValidAddress = size_t(sysinfo.lpMaximumApplicationAddress);
+@@ -433,7 +433,7 @@ void* MapAlignedPages(size_t length, size_t alignment) {
+     alignment = allocGranularity;
+   }
+ 
+-#ifdef __wasi__
++#if defined(__wasi__) || defined(__metal__)
+   void* region = nullptr;
+   if (int err = posix_memalign(&region, alignment, length)) {
+     MOZ_ASSERT(err == ENOMEM);
+@@ -808,7 +808,7 @@ bool MarkPagesUnusedSoft(void* region, size_t length) {
+ #if defined(XP_WIN)
+   return VirtualAlloc(region, length, MEM_RESET,
+                       DWORD(PageAccess::ReadWrite)) == region;
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+   return 0;
+ #else
+   int status;
+@@ -881,7 +881,7 @@ size_t GetPageFaultCount() {
+     return 0;
+   }
+   return pmc.PageFaultCount;
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+   return 0;
+ #else
+   struct rusage usage;
+@@ -895,7 +895,7 @@ size_t GetPageFaultCount() {
+ 
+ void* AllocateMappedContent(int fd, size_t offset, size_t length,
+                             size_t alignment) {
+-#ifdef __wasi__
++#if defined(__wasi__) || defined(__metal__)
+   MOZ_CRASH("Not yet supported for WASI");
+ #else
+   if (length == 0 || alignment == 0 || offset % alignment != 0 ||
+@@ -994,7 +994,7 @@ void* AllocateMappedContent(int fd, size_t offset, size_t length,
+ }
+ 
+ void DeallocateMappedContent(void* region, size_t length) {
+-#ifdef __wasi__
++#if defined(__wasi__) || defined(__metal__)
+   MOZ_CRASH("Not yet supported for WASI");
+ #else
+   if (!region) {
+@@ -1027,7 +1027,7 @@ static inline void ProtectMemory(void* region, size_t length, PageAccess prot) {
+   DWORD oldProtect;
+   MOZ_RELEASE_ASSERT(VirtualProtect(region, length, DWORD(prot), &oldProtect) !=
+                      0);
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+   /* nothing */
+ #else
+   MOZ_RELEASE_ASSERT(mprotect(region, length, int(prot)) == 0);
+diff --git a/mozjs-sys/mozjs/js/src/jit/ProcessExecutableMemory.cpp b/mozjs-sys/mozjs/js/src/jit/ProcessExecutableMemory.cpp
+index 4117acb79..3494b643c 100644
+--- a/mozjs-sys/mozjs/js/src/jit/ProcessExecutableMemory.cpp
++++ b/mozjs-sys/mozjs/js/src/jit/ProcessExecutableMemory.cpp
+@@ -31,7 +31,7 @@
+ #ifdef XP_WIN
+ #  include "mozilla/StackWalk_windows.h"
+ #  include "mozilla/WindowsVersion.h"
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+ #  if defined(JS_CODEGEN_WASM32)
+ #    include <cstdlib>
+ #  else
+@@ -398,7 +398,7 @@ static void DecommitPages(void* addr, size_t bytes) {
+     MOZ_CRASH("DecommitPages failed");
+   }
+ }
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+ #  if defined(JS_CODEGEN_WASM32)
+ static void* ReserveProcessExecutableMemory(size_t bytes) {
+   return malloc(bytes);
+@@ -965,7 +965,7 @@ bool js::jit::ReprotectRegion(void* start, size_t size,
+   // We use the C++ fence here -- and not AtomicOperations::fenceSeqCst() --
+   // primarily because ReprotectRegion will be called while we construct our own
+   // jitted atomics.  But the C++ fence is sufficient and correct, too.
+-#ifdef __wasi__
++#if defined(__wasi__) || defined(__metal__)
+   MOZ_CRASH("NYI FOR WASI.");
+ #else
+   std::atomic_thread_fence(std::memory_order_seq_cst);
+diff --git a/mozjs-sys/mozjs/js/src/moz.build b/mozjs-sys/mozjs/js/src/moz.build
+index 6e1e6b6e0..6c2f59454 100755
+--- a/mozjs-sys/mozjs/js/src/moz.build
++++ b/mozjs-sys/mozjs/js/src/moz.build
+@@ -508,6 +508,11 @@ elif CONFIG["OS_ARCH"] == "WASI":
+         "threading/noop/CpuCount.cpp",
+         "threading/noop/NoopThread.cpp",
+     ]
++elif CONFIG["OS_ARCH"] == "none":
++    UNIFIED_SOURCES += [
++        "threading/noop/CpuCount.cpp",
++        "threading/noop/NoopThread.cpp",
++    ]
+ else:
+     UNIFIED_SOURCES += [
+         "threading/posix/CpuCount.cpp",
+diff --git a/mozjs-sys/mozjs/js/src/threading/ConditionVariable.h b/mozjs-sys/mozjs/js/src/threading/ConditionVariable.h
+index 5ff0590c5..ace4addb4 100644
+--- a/mozjs-sys/mozjs/js/src/threading/ConditionVariable.h
++++ b/mozjs-sys/mozjs/js/src/threading/ConditionVariable.h
+@@ -12,7 +12,7 @@
+ 
+ #include <stdint.h>
+ #include <utility>
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && !defined(__wasi__) && !defined(__metal__)
+ #  include <pthread.h>
+ #endif
+ 
+diff --git a/mozjs-sys/mozjs/js/src/util/CompleteFile.cpp b/mozjs-sys/mozjs/js/src/util/CompleteFile.cpp
+index dae397f52..085919188 100644
+--- a/mozjs-sys/mozjs/js/src/util/CompleteFile.cpp
++++ b/mozjs-sys/mozjs/js/src/util/CompleteFile.cpp
+@@ -8,7 +8,10 @@
+ 
+ #include <cstring>     // std::strcmp
+ #include <stdio.h>     // FILE, fileno, fopen, getc, getc_unlocked, _getc_nolock
++
++#ifndef __metal__
+ #include <sys/stat.h>  // stat, fstat
++#endif
+ 
+ #ifdef __wasi__
+ #  include "js/Vector.h"
+@@ -19,6 +22,10 @@
+ #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_CANT_OPEN
+ 
+ bool js::ReadCompleteFile(JSContext* cx, FILE* fp, FileContents& buffer) {
++#if defined(__metal__)
++  // On Metal, we don't have a file system, so we can't read files.
++  return false;
++#else
+   /* Get the complete length of the file, if possible. */
+   struct stat st;
+   int ok = fstat(fileno(fp), &st);
+@@ -73,6 +80,7 @@ bool js::ReadCompleteFile(JSContext* cx, FILE* fp, FileContents& buffer) {
+   }
+ 
+   return true;
++#endif  // __metal__
+ }
+ 
+ #ifdef __wasi__
+diff --git a/mozjs-sys/mozjs/js/src/util/NativeStack.cpp b/mozjs-sys/mozjs/js/src/util/NativeStack.cpp
+index 4e4189d39..ca9a42b48 100644
+--- a/mozjs-sys/mozjs/js/src/util/NativeStack.cpp
++++ b/mozjs-sys/mozjs/js/src/util/NativeStack.cpp
+@@ -10,7 +10,7 @@
+ 
+ #ifdef XP_WIN
+ #  include "util/WindowsWrapper.h"
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+ // Nothing
+ #elif defined(XP_DARWIN) || defined(DARWIN) || defined(XP_UNIX)
+ #  include <pthread.h>
+@@ -117,7 +117,7 @@ void* js::GetNativeStackBaseImpl() {
+ #  endif
+ }
+ 
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+ 
+ // Since we rearrange the layout for wasi via --stack-first flag for the linker
+ // the final layout is: 0x00 | <- stack | data | heap -> |.
+diff --git a/mozjs-sys/mozjs/js/src/vm/ArrayBufferObject.cpp b/mozjs-sys/mozjs/js/src/vm/ArrayBufferObject.cpp
+index 4a4a94daf..1c9f6da1f 100644
+--- a/mozjs-sys/mozjs/js/src/vm/ArrayBufferObject.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/ArrayBufferObject.cpp
+@@ -18,7 +18,7 @@
+ #include <algorithm>  // std::max, std::min
+ #include <memory>     // std::uninitialized_copy_n
+ #include <string.h>
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && !defined(__wasi__) && !defined(__metal__)
+ #  include <sys/mman.h>
+ #endif
+ #include <tuple>  // std::tuple
+@@ -203,7 +203,7 @@ void* js::MapBufferMemory(wasm::IndexType t, size_t mappedSize,
+     VirtualFree(data, 0, MEM_RELEASE);
+     return nullptr;
+   }
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+   void* data = nullptr;
+   if (int err = posix_memalign(&data, gc::SystemPageSize(), mappedSize)) {
+     MOZ_ASSERT(err == ENOMEM);
+@@ -246,7 +246,7 @@ bool js::CommitBufferMemory(void* dataEnd, size_t delta) {
+   if (!VirtualAlloc(dataEnd, delta, MEM_COMMIT, PAGE_READWRITE)) {
+     return false;
+   }
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+   // posix_memalign'd memory is already committed
+   return true;
+ #else
+@@ -276,7 +276,7 @@ bool js::ExtendBufferMapping(void* dataPointer, size_t mappedSize,
+     return false;
+   }
+   return true;
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+   return false;
+ #elif defined(XP_LINUX)
+   // Note this will not move memory (no MREMAP_MAYMOVE specified)
+@@ -296,7 +296,7 @@ void js::UnmapBufferMemory(wasm::IndexType t, void* base, size_t mappedSize) {
+ 
+ #ifdef XP_WIN
+   VirtualFree(base, 0, MEM_RELEASE);
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+   free(base);
+ #else
+   munmap(base, mappedSize);
+@@ -1152,7 +1152,7 @@ void WasmArrayRawBuffer::discard(size_t byteOffset, size_t byteLen) {
+   if (!VirtualAlloc(addr, byteLen, MEM_COMMIT, PAGE_READWRITE)) {
+     MOZ_CRASH("wasm discard: decommitted memory but failed to recommit");
+   };
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+   memset(addr, 0, byteLen);
+ #else  // !XP_WIN
+   void* data = MozTaggedAnonymousMmap(addr, byteLen, PROT_READ | PROT_WRITE,
+diff --git a/mozjs-sys/mozjs/js/src/vm/CharacterEncoding.cpp b/mozjs-sys/mozjs/js/src/vm/CharacterEncoding.cpp
+index 8911612a7..0f6090690 100644
+--- a/mozjs-sys/mozjs/js/src/vm/CharacterEncoding.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/CharacterEncoding.cpp
+@@ -676,7 +676,7 @@ JS_PUBLIC_API JS::UniqueChars JS::EncodeWideToUtf8(JSContext* cx,
+                                                    const wchar_t* chars) {
+   using CheckedSizeT = mozilla::CheckedInt<size_t>;
+ 
+-#ifndef XP_LINUX
++#if !defined(XP_LINUX) && !defined(__metal__)
+   // Use the standard codecvt facet to convert a wide string to UTF-8.
+   std::codecvt_utf8<wchar_t> cv;
+ 
+@@ -801,7 +801,7 @@ JS_PUBLIC_API JS::UniqueWideChars JS::EncodeUtf8ToWide(JSContext* cx,
+   // Only valid UTF-8 strings should be passed to this function.
+   MOZ_ASSERT(mozilla::IsUtf8(mozilla::Span(chars, strlen(chars))));
+ 
+-#ifndef XP_LINUX
++#if !defined(XP_LINUX) && !defined(__metal__)
+   // Use the standard codecvt facet to convert from UTF-8 to a wide string.
+   std::codecvt_utf8<wchar_t> cv;
+ 
+diff --git a/mozjs-sys/mozjs/js/src/vm/Runtime.cpp b/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
+index 83864e9d1..7eb8c4c4f 100644
+--- a/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
+@@ -65,7 +65,7 @@ JS::FilenameValidationCallback js::gFilenameValidationCallback = nullptr;
+ 
+ namespace js {
+ 
+-#ifndef __wasi__
++#if !defined(__wasi__) && !defined(__metal__)
+ bool gCanUseExtraThreads = true;
+ #else
+ bool gCanUseExtraThreads = false;
+@@ -153,7 +153,7 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
+   JS_COUNT_CTOR(JSRuntime);
+   liveRuntimesCount++;
+ 
+-#ifndef __wasi__
++#if !defined(__wasi__) && !defined(__metal__)
+   // See function comment for why we call this now, not in JS_Init().
+   wasm::EnsureEagerProcessSignalHandlers();
+ #endif  // __wasi__
+diff --git a/mozjs-sys/mozjs/js/src/vm/SharedArrayObject.cpp b/mozjs-sys/mozjs/js/src/vm/SharedArrayObject.cpp
+index 207bfc1d2..4799da14d 100644
+--- a/mozjs-sys/mozjs/js/src/vm/SharedArrayObject.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/SharedArrayObject.cpp
+@@ -241,7 +241,7 @@ void WasmSharedArrayRawBuffer::discard(size_t byteOffset, size_t byteLen) {
+     MOZ_ASSERT(!result);  // this always "fails" when unlocking unlocked
+                           // memory...which is the only case we care about
+   }
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+   AtomicOperations::memsetSafeWhenRacy(addr, 0, byteLen);
+ #else  // !XP_WIN
+   void* data = MozTaggedAnonymousMmap(
+diff --git a/mozjs-sys/mozjs/js/src/vm/TypedArrayObject.cpp b/mozjs-sys/mozjs/js/src/vm/TypedArrayObject.cpp
+index 1594bf7e3..ae8d53eb7 100644
+--- a/mozjs-sys/mozjs/js/src/vm/TypedArrayObject.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/TypedArrayObject.cpp
+@@ -21,7 +21,7 @@
+ #include <numeric>
+ #include <string.h>
+ #include <string_view>
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && !defined(__wasi__) && !defined(__metal__)
+ #  include <sys/mman.h>
+ #endif
+ #include <type_traits>
+diff --git a/mozjs-sys/mozjs/js/src/vm/UbiNodeShortestPaths.cpp b/mozjs-sys/mozjs/js/src/vm/UbiNodeShortestPaths.cpp
+index f11cf1903..006de18d9 100644
+--- a/mozjs-sys/mozjs/js/src/vm/UbiNodeShortestPaths.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/UbiNodeShortestPaths.cpp
+@@ -9,6 +9,7 @@
+ #include "mozilla/Maybe.h"
+ 
+ #include <stdio.h>
++#include <wchar.h>
+ #include <utility>
+ 
+ #include "util/Text.h"
+diff --git a/mozjs-sys/mozjs/js/src/wasm/WasmSignalHandlers.cpp b/mozjs-sys/mozjs/js/src/wasm/WasmSignalHandlers.cpp
+index f838b7bec..aace40f25 100644
+--- a/mozjs-sys/mozjs/js/src/wasm/WasmSignalHandlers.cpp
++++ b/mozjs-sys/mozjs/js/src/wasm/WasmSignalHandlers.cpp
+@@ -34,7 +34,7 @@
+ #elif defined(XP_DARWIN)
+ #  include <mach/exc.h>
+ #  include <mach/mach.h>
+-#elif !defined(__wasi__)
++#elif !defined(__wasi__) && !defined(__metal__)
+ #  include <signal.h>
+ #endif
+ 
+diff --git a/mozjs-sys/mozjs/memory/build/malloc_decls.h b/mozjs-sys/mozjs/memory/build/malloc_decls.h
+index ec56344a3..a3a1521af 100644
+--- a/mozjs-sys/mozjs/memory/build/malloc_decls.h
++++ b/mozjs-sys/mozjs/memory/build/malloc_decls.h
+@@ -9,6 +9,7 @@
+ //   - function name
+ //   - return type
+ //   - argument types
++#include "malloc.h"
+ 
+ #ifndef malloc_decls_h
+ #  define malloc_decls_h
+diff --git a/mozjs-sys/mozjs/memory/mozalloc/mozalloc.cpp b/mozjs-sys/mozjs/memory/mozalloc/mozalloc.cpp
+index aef8ab943..20511990d 100644
+--- a/mozjs-sys/mozjs/memory/mozalloc/mozalloc.cpp
++++ b/mozjs-sys/mozjs/memory/mozalloc/mozalloc.cpp
+@@ -19,6 +19,9 @@
+ #  if defined(XP_UNIX)
+ #    include <unistd.h>
+ #  endif  // if defined(XP_UNIX)
++#  if defined(__metal__)
++#    include <malloc.h>
++#  endif  // if defined(__metal__)
+ 
+ #  define malloc_impl malloc
+ #  define calloc_impl calloc
+diff --git a/mozjs-sys/mozjs/memory/mozalloc/mozalloc_abort.cpp b/mozjs-sys/mozjs/memory/mozalloc/mozalloc_abort.cpp
+index 9c487ac45..c3ca866f1 100644
+--- a/mozjs-sys/mozjs/memory/mozalloc/mozalloc_abort.cpp
++++ b/mozjs-sys/mozjs/memory/mozalloc/mozalloc_abort.cpp
+@@ -62,7 +62,9 @@ void fillAbortMessage(char (&msg)[N], uintptr_t retAddress) {
+ }
+ #endif
+ 
+-#if defined(XP_UNIX) && !defined(MOZ_ASAN) && !defined(MOZ_TSAN) && \
++#if defined(__metal__)
++// nothing to do here
++#elif defined(XP_UNIX) && !defined(MOZ_ASAN) && !defined(MOZ_TSAN) && \
+     !defined(LIBFUZZER)
+ // Define abort() here, so that it is used instead of the system abort(). This
+ // lets us control the behavior when aborting, in order to get better results
+diff --git a/mozjs-sys/mozjs/mfbt/Assertions.h b/mozjs-sys/mozjs/mfbt/Assertions.h
+index e84d76aba..9e81abbfb 100644
+--- a/mozjs-sys/mozjs/mfbt/Assertions.h
++++ b/mozjs-sys/mozjs/mfbt/Assertions.h
+@@ -21,7 +21,7 @@
+ #if defined(_WIN32)
+ #  include <process.h>
+ #  define MOZ_GET_PID() _getpid()
+-#elif !defined(__wasi__)
++#elif !defined(__wasi__) && !defined(__metal__)
+ #  include <unistd.h>
+ #  define MOZ_GET_PID() getpid()
+ #else
+@@ -79,9 +79,9 @@ __declspec(dllimport) int __stdcall TerminateProcess(void* hProcess,
+                                                      unsigned int uExitCode);
+ __declspec(dllimport) void* __stdcall GetCurrentProcess(void);
+ MOZ_END_EXTERN_C
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+ /*
+- * On Wasm/WASI platforms, we just call __builtin_trap().
++ * On Wasm/WASI/metal platforms, we just call __builtin_trap().
+  */
+ #else
+ #  include <signal.h>
+@@ -230,7 +230,7 @@ MOZ_NoReturn(int aLine) {
+       MOZ_NoReturn(line);         \
+     } while (false)
+ 
+-#elif __wasi__
++#elif defined(__wasi__) || defined(__metal__)
+ 
+ #  define MOZ_REALLY_CRASH(line) __builtin_trap()
+ 
+diff --git a/mozjs-sys/mozjs/mfbt/Poison.cpp b/mozjs-sys/mozjs/mfbt/Poison.cpp
+index d4ec08e70..6218ea391 100644
+--- a/mozjs-sys/mozjs/mfbt/Poison.cpp
++++ b/mozjs-sys/mozjs/mfbt/Poison.cpp
+@@ -16,7 +16,7 @@
+ #  include <windows.h>
+ #elif !defined(__OS2__)
+ #  include <unistd.h>
+-#  ifndef __wasi__
++#  if !defined(__wasi__) && !defined(__metal__)
+ #    include <sys/mman.h>
+ #    ifndef MAP_ANON
+ #      ifdef MAP_ANONYMOUS
+@@ -86,7 +86,7 @@ static uintptr_t GetDesiredRegionSize() {
+ 
+ #  define RESERVE_FAILED 0
+ 
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+ 
+ #  define RESERVE_FAILED 0
+ 
+@@ -99,7 +99,11 @@ static void ReleaseRegion(void* aRegion, uintptr_t aSize) { return; }
+ static bool ProbeRegion(uintptr_t aRegion, uintptr_t aSize) {
+   const auto pageSize = 1 << 16;
+   MOZ_ASSERT(pageSize == sysconf(_SC_PAGESIZE));
++#if defined(__wasi__)
+   auto heapSize = __builtin_wasm_memory_size(0) * pageSize;
++#else
++  auto heapSize = sysconf(_SC_PAGE_SIZE) * sysconf(_SC_PHYS_PAGES);
++#endif
+   return aRegion + aSize < heapSize;
+ }
+ 
+diff --git a/mozjs-sys/mozjs/mfbt/RandomNum.cpp b/mozjs-sys/mozjs/mfbt/RandomNum.cpp
+index 96de5d405..fb38d8556 100644
+--- a/mozjs-sys/mozjs/mfbt/RandomNum.cpp
++++ b/mozjs-sys/mozjs/mfbt/RandomNum.cpp
+@@ -29,7 +29,7 @@ extern "C" BOOLEAN NTAPI RtlGenRandom(PVOID RandomBuffer,
+ 
+ #if defined(ANDROID) || defined(XP_DARWIN) || defined(__DragonFly__) ||    \
+     defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || \
+-    defined(__wasi__)
++    defined(__wasi__) || defined(__metal__)
+ #  include <stdlib.h>
+ #  define USE_ARC4RANDOM
+ #endif
+diff --git a/mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h b/mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h
+index 7ca5e60c9..e19d89ec5 100644
+--- a/mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h
++++ b/mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h
+@@ -33,7 +33,7 @@
+ 
+ #ifndef XP_WIN
+ 
+-#  ifdef __wasi__
++#  if defined(__wasi__) || defined(__metal__)
+ #    include <stdlib.h>
+ #  else
+ #    include <sys/types.h>
+@@ -67,7 +67,7 @@ static inline void MozTagAnonymousMemory(const void* aPtr, size_t aLength,
+ static inline void* MozTaggedAnonymousMmap(void* aAddr, size_t aLength,
+                                            int aProt, int aFlags, int aFd,
+                                            off_t aOffset, const char* aTag) {
+-#    ifdef __wasi__
++#    if defined(__wasi__) || defined(__metal__)
+   MOZ_CRASH("We don't use this memory for WASI right now.");
+   return nullptr;
+ #    else
+diff --git a/mozjs-sys/mozjs/mfbt/ThreadLocal.h b/mozjs-sys/mozjs/mfbt/ThreadLocal.h
+index 891b2cdd5..a2b5a96d2 100644
+--- a/mozjs-sys/mozjs/mfbt/ThreadLocal.h
++++ b/mozjs-sys/mozjs/mfbt/ThreadLocal.h
+@@ -9,7 +9,7 @@
+ #ifndef mozilla_ThreadLocal_h
+ #define mozilla_ThreadLocal_h
+ 
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && !defined(__wasi__) && !defined(__metal__)
+ #  include <pthread.h>
+ #endif
+ 
+@@ -120,7 +120,7 @@ class ThreadLocalKeyStorage {
+   unsigned long mKey;
+ };
+ #  endif
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+ // There are no threads on WASI, so we just use a global variable.
+ template <typename T>
+ class ThreadLocalKeyStorage {
+@@ -240,7 +240,7 @@ inline void ThreadLocal<T, Storage>::set(const T aValue) {
+ #  define MOZ_THREAD_LOCAL(TYPE)                 \
+     thread_local ::mozilla::detail::ThreadLocal< \
+         TYPE, ::mozilla::detail::ThreadLocalNativeStorage>
+-#elif defined(HAVE_THREAD_TLS_KEYWORD) && !defined(MOZ_LINKER)
++#elif defined(HAVE_THREAD_TLS_KEYWORD) && !defined(MOZ_LINKER) && !defined(__metal__)
+ #  define MOZ_THREAD_LOCAL(TYPE)             \
+     __thread ::mozilla::detail::ThreadLocal< \
+         TYPE, ::mozilla::detail::ThreadLocalNativeStorage>
+diff --git a/mozjs-sys/mozjs/mozglue/baseprofiler/core/ProfilerUtils.cpp b/mozjs-sys/mozjs/mozglue/baseprofiler/core/ProfilerUtils.cpp
+index 517efcbb2..59325cb7a 100644
+--- a/mozjs-sys/mozjs/mozglue/baseprofiler/core/ProfilerUtils.cpp
++++ b/mozjs-sys/mozjs/mozglue/baseprofiler/core/ProfilerUtils.cpp
+@@ -12,7 +12,7 @@
+ #include "mozilla/BaseProfilerUtils.h"
+ 
+ // --------------------------------------------- WASI process & thread ids
+-#if defined(__wasi__)
++#if defined(__wasi__) || defined(__metal__)
+ 
+ namespace mozilla::baseprofiler {
+ 
+diff --git a/mozjs-sys/mozjs/mozglue/baseprofiler/public/BaseProfilerUtils.h b/mozjs-sys/mozjs/mozglue/baseprofiler/public/BaseProfilerUtils.h
+index ab02e03b9..88c3d98b7 100644
+--- a/mozjs-sys/mozjs/mozglue/baseprofiler/public/BaseProfilerUtils.h
++++ b/mozjs-sys/mozjs/mozglue/baseprofiler/public/BaseProfilerUtils.h
+@@ -11,7 +11,7 @@
+ // It is safe to include unconditionally.
+ 
+ // --------------------------------------------- WASI process & thread ids
+-#if defined(__wasi__)
++#if defined(__wasi__) || defined(__metal__)
+ 
+ namespace mozilla::baseprofiler::detail {
+ using ProcessIdType = unsigned;
+diff --git a/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.cpp b/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.cpp
+index a73b9bd24..a4a3aa61c 100644
+--- a/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.cpp
++++ b/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.cpp
+@@ -6,7 +6,7 @@
+ 
+ #include "MmapFaultHandler.h"
+ 
+-#if defined(XP_UNIX) && !defined(XP_DARWIN) && !defined(__wasi__)
++#if defined(XP_UNIX) && !defined(XP_DARWIN) && !defined(__wasi__) && !defined(__metal__)
+ 
+ #  include "mozilla/Assertions.h"
+ #  include "mozilla/Atomics.h"
+diff --git a/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.h b/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.h
+index fca356921..42af1fdc2 100644
+--- a/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.h
++++ b/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.h
+@@ -33,7 +33,7 @@
+ #  define MMAP_FAULT_HANDLER_BEGIN_BUFFER(buf, bufLen) {
+ #  define MMAP_FAULT_HANDLER_CATCH(retval) }
+ 
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__metal__)
+ 
+ #  define MMAP_FAULT_HANDLER_BEGIN_HANDLE(fd) {
+ #  define MMAP_FAULT_HANDLER_BEGIN_BUFFER(buf, bufLen) {
+diff --git a/mozjs-sys/mozjs/mozglue/misc/MutexPlatformData_noop.h b/mozjs-sys/mozjs/mozglue/misc/MutexPlatformData_noop.h
+index a2c8d060b..7ee706e0d 100644
+--- a/mozjs-sys/mozjs/mozglue/misc/MutexPlatformData_noop.h
++++ b/mozjs-sys/mozjs/mozglue/misc/MutexPlatformData_noop.h
+@@ -7,8 +7,8 @@
+ #ifndef MutexPlatformData_noop_h
+ #define MutexPlatformData_noop_h
+ 
+-#if !defined(__wasi__)
+-#  error This code is for WASI only.
++#if !defined(__wasi__) && !defined(__metal__)
++#  error This code is for WASI/baremetal only.
+ #endif
+ 
+ #include "mozilla/PlatformMutex.h"
+diff --git a/mozjs-sys/mozjs/mozglue/misc/PlatformConditionVariable.h b/mozjs-sys/mozjs/mozglue/misc/PlatformConditionVariable.h
+index 61fb06ade..1c0d6c8f6 100644
+--- a/mozjs-sys/mozjs/mozglue/misc/PlatformConditionVariable.h
++++ b/mozjs-sys/mozjs/mozglue/misc/PlatformConditionVariable.h
+@@ -14,7 +14,7 @@
+ #include "mozilla/Attributes.h"
+ #include "mozilla/PlatformMutex.h"
+ #include "mozilla/TimeStamp.h"
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && !defined(__wasi__) && !defined(__metal__)
+ #  include <pthread.h>
+ #endif
+ 
+@@ -54,7 +54,7 @@ class ConditionVariableImpl {
+ 
+   PlatformData* platformData();
+ 
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && !defined(__wasi__) && !defined(__metal__)
+   void* platformData_[sizeof(pthread_cond_t) / sizeof(void*)];
+   static_assert(sizeof(pthread_cond_t) / sizeof(void*) != 0 &&
+                     sizeof(pthread_cond_t) % sizeof(void*) == 0,
+diff --git a/mozjs-sys/mozjs/mozglue/misc/PlatformMutex.h b/mozjs-sys/mozjs/mozglue/misc/PlatformMutex.h
+index ac5459cf1..1bc5c8b31 100644
+--- a/mozjs-sys/mozjs/mozglue/misc/PlatformMutex.h
++++ b/mozjs-sys/mozjs/mozglue/misc/PlatformMutex.h
+@@ -12,7 +12,7 @@
+ #include "mozilla/Attributes.h"
+ #include "mozilla/Types.h"
+ 
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && !defined(__wasi__) && !defined(__metal__)
+ #  include <pthread.h>
+ #endif
+ 
+@@ -48,7 +48,7 @@ class MutexImpl {
+ 
+   PlatformData* platformData();
+ 
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && !defined(__wasi__) && !defined(__metal__)
+   void* platformData_[sizeof(pthread_mutex_t) / sizeof(void*)];
+   static_assert(sizeof(pthread_mutex_t) / sizeof(void*) != 0 &&
+                     sizeof(pthread_mutex_t) % sizeof(void*) == 0,
+diff --git a/mozjs-sys/mozjs/mozglue/misc/Printf.cpp b/mozjs-sys/mozjs/mozglue/misc/Printf.cpp
+index 731349561..593f25259 100644
+--- a/mozjs-sys/mozjs/mozglue/misc/Printf.cpp
++++ b/mozjs-sys/mozjs/mozglue/misc/Printf.cpp
+@@ -20,6 +20,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <ctype.h>
+ 
+ #if defined(XP_WIN)
+ #  include <windows.h>
+diff --git a/mozjs-sys/mozjs/mozglue/misc/SSE.cpp b/mozjs-sys/mozjs/mozglue/misc/SSE.cpp
+index 74f391778..c2bc09fca 100644
+--- a/mozjs-sys/mozjs/mozglue/misc/SSE.cpp
++++ b/mozjs-sys/mozjs/mozglue/misc/SSE.cpp
+@@ -107,32 +107,31 @@ static void moz_cpuid_ex(int CPUInfo[4], int InfoType) {
+ }
+ #  else
+ static void moz_cpuid(int CPUInfo[4], int InfoType) {
+-  asm("xchg %rsi, %rbx\n"
+-      "xor %ecx, %ecx\n"  // ecx is the sub-leaf (we only ever need 0)
+-      "cpuid\n"
+-      "movl %eax, (%rdi)\n"
+-      "movl %ebx, 4(%rdi)\n"
+-      "movl %ecx, 8(%rdi)\n"
+-      "movl %edx, 12(%rdi)\n"
+-      "xchg %rsi, %rbx\n"
+-      :
+-      : "a"(InfoType),  // %eax
+-        "D"(CPUInfo)    // %rdi
+-      : "%ecx", "%edx", "%rsi");
++  asm volatile("xchg %%rsi, %%rbx\n\t"
++               "xor %%ecx, %%ecx\n\t"
++               "cpuid\n\t"
++               "movl %%eax, %0\n\t"
++               "movl %%ebx, %1\n\t"
++               "movl %%ecx, %2\n\t"
++               "movl %%edx, %3\n\t"
++               "xchg %%rsi, %%rbx"
++               : "=m"(CPUInfo[0]), "=m"(CPUInfo[1]), "=m"(CPUInfo[2]), "=m"(CPUInfo[3])
++               : "a"(InfoType)
++               : "ecx", "edx", "rsi", "rbx");
+ }
++
+ static void moz_cpuid_ex(int CPUInfo[4], int InfoType) {
+-  asm("xchg %rsi, %rbx\n"
+-      "movl 1, %ecx\n"
+-      "cpuid\n"
+-      "movl %eax, (%rdi)\n"
+-      "movl %ebx, 4(%rdi)\n"
+-      "movl %ecx, 8(%rdi)\n"
+-      "movl %edx, 12(%rdi)\n"
+-      "xchg %rsi, %rbx\n"
+-      :
+-      : "a"(InfoType),  // %eax
+-        "D"(CPUInfo)    // %rdi
+-      : "%ecx", "%edx", "%rsi");
++  asm volatile("xchg %%rsi, %%rbx\n\t"
++               "movl $1, %%ecx\n\t"
++               "cpuid\n\t"
++               "movl %%eax, %0\n\t"
++               "movl %%ebx, %1\n\t"
++               "movl %%ecx, %2\n\t"
++               "movl %%edx, %3\n\t"
++               "xchg %%rsi, %%rbx"
++               : "=m"(CPUInfo[0]), "=m"(CPUInfo[1]), "=m"(CPUInfo[2]), "=m"(CPUInfo[3])
++               : "a"(InfoType)
++               : "ecx", "edx", "rsi", "rbx");
+ }
+ #  endif
+ 
+diff --git a/mozjs-sys/mozjs/mozglue/misc/TimeStamp_metal.cpp b/mozjs-sys/mozjs/mozglue/misc/TimeStamp_metal.cpp
+new file mode 100644
+index 000000000..3d9ef6350
+--- /dev/null
++++ b/mozjs-sys/mozjs/mozglue/misc/TimeStamp_metal.cpp
+@@ -0,0 +1,53 @@
++#include <time.h>
++
++#include "mozilla/TimeStamp.h"
++
++// stub for now
++namespace mozilla {
++
++double BaseTimeDurationPlatformUtils::ToSeconds(int64_t aTicks) {
++  return double(aTicks) / kNsPerSecd;
++}
++
++double BaseTimeDurationPlatformUtils::ToSecondsSigDigits(int64_t aTicks) {
++  // don't report a value < mResolution ...
++  int64_t valueSigDigs = sResolution * (aTicks / sResolution);
++  // and chop off insignificant digits
++  valueSigDigs = sResolutionSigDigs * (valueSigDigs / sResolutionSigDigs);
++  return double(valueSigDigs) / kNsPerSecd;
++}
++
++int64_t BaseTimeDurationPlatformUtils::TicksFromMilliseconds(
++    double aMilliseconds) {
++  double result = aMilliseconds * kNsPerMsd;
++  if (result > double(INT64_MAX)) {
++    return INT64_MAX;
++  }
++  if (result < INT64_MIN) {
++    return INT64_MIN;
++  }
++
++  return result;
++}
++
++int64_t BaseTimeDurationPlatformUtils::ResolutionInTicks() {
++  return static_cast<int64_t>(sResolution);
++}
++
++double BaseTimeDurationPlatformUtils::ToSeconds(int64_t aTicks) {
++  return double(aTicks) / kNsPerSecd;
++}
++
++void TimeStamp::Startup() { }
++
++void TimeStamp::Shutdown() { }
++
++TimeStamp TimeStamp::Now(bool aHighResolution) {
++    return TimeStamp(0);
++}
++
++uint64_t TimeStamp::ComputeProcessUptime() {
++    return 0;
++}
++
++} // namespace mozilla
+diff --git a/mozjs-sys/mozjs/mozglue/misc/TimeStamp_posix.cpp b/mozjs-sys/mozjs/mozglue/misc/TimeStamp_posix.cpp
+index ba32a230e..5cdc80a11 100644
+--- a/mozjs-sys/mozjs/mozglue/misc/TimeStamp_posix.cpp
++++ b/mozjs-sys/mozjs/mozglue/misc/TimeStamp_posix.cpp
+@@ -13,11 +13,14 @@
+ // obtained with this API; see TimeDuration::Resolution;
+ //
+ 
+-#include <sys/syscall.h>
+ #include <time.h>
+ #include <unistd.h>
+ #include <string.h>
+ 
++#if !defined (__metal__)
++#  include <sys/syscall.h>
++#endif
++
+ #if defined(__DragonFly__) || defined(__FreeBSD__) || defined(__NetBSD__) || \
+     defined(__OpenBSD__)
+ #  include <sys/param.h>
+@@ -50,7 +53,7 @@
+ #include "mozilla/Sprintf.h"
+ #include "mozilla/TimeStamp.h"
+ 
+-#if !defined(__wasi__)
++#if !defined(__wasi__) && !defined(__metal__)
+ #  include <pthread.h>
+ #endif
+ 
+diff --git a/mozjs-sys/mozjs/mozglue/misc/moz.build b/mozjs-sys/mozjs/mozglue/misc/moz.build
+index 8770e09d5..37cb816a0 100644
+--- a/mozjs-sys/mozjs/mozglue/misc/moz.build
++++ b/mozjs-sys/mozjs/mozglue/misc/moz.build
+@@ -116,6 +116,10 @@ elif CONFIG["OS_ARCH"] == "Darwin":
+     SOURCES += [
+         "TimeStamp_darwin.cpp",
+     ]
++elif CONFIG["OS_ARCH"] == "none":
++    SOURCES += [
++        "TimeStamp_posix.cpp",
++    ]
+ elif CONFIG["HAVE_CLOCK_MONOTONIC"]:
+     SOURCES += [
+         "TimeStamp_posix.cpp",
+@@ -135,6 +139,11 @@ elif CONFIG["OS_ARCH"] == "WASI":
+         "ConditionVariable_noop.cpp",
+         "Mutex_noop.cpp",
+     ]
++elif CONFIG["OS_ARCH"] == "none":
++    SOURCES += [
++        "ConditionVariable_noop.cpp",
++        "Mutex_noop.cpp",
++    ]
+ else:
+     SOURCES += [
+         "ConditionVariable_posix.cpp",
+diff --git a/mozjs-sys/mozjs/nsprpub/configure.in b/mozjs-sys/mozjs/nsprpub/configure.in
+index 7d4446689..9614940e5 100644
+--- a/mozjs-sys/mozjs/nsprpub/configure.in
++++ b/mozjs-sys/mozjs/nsprpub/configure.in
+@@ -539,6 +539,14 @@ dnl conditional block. Invoke AC_PROG_CC outside any conditional block
+ dnl and before invoking AC_TRY_COMPILE (which requires AC_PROG_CC).
+ AC_PROG_CC
+ 
++
++AC_MSG_CHECKING([for HOST_CC environment variable])
++if test -n "$HOST_CXX"; then
++    AC_MSG_RESULT([$HOST_CC])
++else
++    AC_MSG_RESULT([not set])
++fi
++
+ dnl Reenter the conditional blocks after invoking AC_PROG_CC.
+ if test "$target" != "$host"; then
+     if test -n "$USE_CPLUS"; then
+diff --git a/mozjs-sys/mozjs/python/mozbuild/mozbuild/configure/constants.py b/mozjs-sys/mozjs/python/mozbuild/mozbuild/configure/constants.py
+index 25f43bb9f..adfdd40c3 100644
+--- a/mozjs-sys/mozjs/python/mozbuild/mozbuild/configure/constants.py
++++ b/mozjs-sys/mozjs/python/mozbuild/mozbuild/configure/constants.py
+@@ -43,6 +43,7 @@ class OS(EnumString):
+         "SunOS",
+         "WINNT",
+         "WASI",
++        "none",
+     )
+ 
+ 
+@@ -58,6 +59,7 @@ class Kernel(EnumString):
+         "SunOS",
+         "WINNT",
+         "WASI",
++        "none",
+     )
+ 
+ 
+@@ -149,6 +151,7 @@ kernel_preprocessor_checks = {
+     "SunOS": "__sun__",
+     "WINNT": "_WIN32 || __CYGWIN__",
+     "WASI": "__wasi__",
++    "none": "__metal__",
+ }
+ 
+ assert sorted(kernel_preprocessor_checks.keys()) == sorted(Kernel.POSSIBLE_VALUES)
+diff --git a/mozjs-sys/src/jsgc.rs b/mozjs-sys/src/jsgc.rs
+index db7e5775d..20d71ea50 100644
+--- a/mozjs-sys/src/jsgc.rs
++++ b/mozjs-sys/src/jsgc.rs
+@@ -1,14 +1,16 @@
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++extern crate alloc;
+ 
+ use crate::jsapi::JS;
+ use crate::jsapi::{jsid, JSFunction, JSObject, JSScript, JSString, JSTracer};
+ use crate::jsid::VoidId;
+-use std::cell::UnsafeCell;
+-use std::ffi::{c_char, c_void};
+-use std::mem;
+-use std::ptr;
++use core::cell::UnsafeCell;
++use core::ffi::{c_char, c_void};
++use core::mem;
++use core::ptr;
++use alloc::boxed::Box;
+ 
+ /// A trait for JS types that can be registered as roots.
+ pub trait RootKind {
+diff --git a/mozjs-sys/src/jsglue.cpp b/mozjs-sys/src/jsglue.cpp
+index 5f20d0c64..c21fc245f 100644
+--- a/mozjs-sys/src/jsglue.cpp
++++ b/mozjs-sys/src/jsglue.cpp
+@@ -803,13 +803,15 @@ void DeleteRootedObjectVector(JS::PersistentRootedObjectVector* v) { delete v; }
+ // nothing needed here
+ #elif defined(_MSC_VER)
+ // nothing needed here
++#elif defined(__metal__)
++// nothing needed here
+ #else
+ #  error "unsupported platform"
+ #endif
+ 
+ // SpiderMonkey-in-Rust currently uses system malloc, not jemalloc.
+ static size_t MallocSizeOf(const void* aPtr) {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__metal__)
+   return malloc_usable_size((void*)aPtr);
+ #elif defined(__APPLE__)
+   return malloc_size((void*)aPtr);
+diff --git a/mozjs-sys/src/jsimpls.rs b/mozjs-sys/src/jsimpls.rs
+index f7604641c..8a3220515 100644
+--- a/mozjs-sys/src/jsimpls.rs
++++ b/mozjs-sys/src/jsimpls.rs
+@@ -24,9 +24,9 @@ use crate::jsgc::{RootKind, Rooted, RootedBase, ValueArray};
+ use crate::jsid::VoidId;
+ use crate::jsval::{JSVal, UndefinedValue};
+ 
+-use std::marker::PhantomData;
+-use std::ops::Deref;
+-use std::ptr;
++use core::marker::PhantomData;
++use core::ops::Deref;
++use core::ptr;
+ 
+ impl<T> Deref for JS::Handle<T> {
+     type Target = T;
+diff --git a/mozjs-sys/src/jsval.rs b/mozjs-sys/src/jsval.rs
+index 07575e954..c4c8bd0f0 100644
+--- a/mozjs-sys/src/jsval.rs
++++ b/mozjs-sys/src/jsval.rs
+@@ -15,8 +15,8 @@ use crate::jsapi::JS::TraceKind;
+ use crate::jsapi::JS::Value;
+ 
+ use libc::c_void;
+-use std::default::Default;
+-use std::mem;
++use core::default::Default;
++use core::assert;
+ 
+ pub type JSVal = Value;
+ 
+@@ -113,7 +113,7 @@ pub fn Int32Value(i: i32) -> JSVal {
+ #[cfg(target_pointer_width = "64")]
+ #[inline(always)]
+ pub fn DoubleValue(f: f64) -> JSVal {
+-    let bits: u64 = unsafe { mem::transmute(f) };
++    let bits: u64 = f64::to_bits(f);
+     assert!(bits <= ValueShiftedTag::MAX_DOUBLE as u64);
+     AsJSVal(bits)
+ }
+@@ -430,7 +430,7 @@ impl JSVal {
+     #[inline(always)]
+     pub fn to_double(&self) -> f64 {
+         assert!(self.is_double());
+-        unsafe { mem::transmute(self.asBits()) }
++        f64::from_bits(self.asBits())
+     }
+ 
+     #[inline(always)]
+diff --git a/mozjs-sys/src/lib.rs b/mozjs-sys/src/lib.rs
+index 0087a362f..79a82b925 100644
+--- a/mozjs-sys/src/lib.rs
++++ b/mozjs-sys/src/lib.rs
+@@ -1,7 +1,7 @@
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
++#![no_std]
+ #![allow(unused_extern_crates)]
+ #![cfg_attr(feature = "crown", feature(register_tool))]
+ #![cfg_attr(feature = "crown", register_tool(crown))]
+@@ -29,6 +29,7 @@ pub use crate::generated::root as jsapi;
+ // The bindings generated by bindgen
+ #[doc(hidden)]
+ #[allow(dead_code)]
++#[expect(unnecessary_transmutes, reason = "bindgen codegen under Rust 1.88+")]
+ mod generated {
+     include!(concat!(env!("OUT_DIR"), "/build/jsapi.rs"));
+ }
+diff --git a/mozjs-sys/src/trace.rs b/mozjs-sys/src/trace.rs
+index 6f06c84e3..046eac226 100644
+--- a/mozjs-sys/src/trace.rs
++++ b/mozjs-sys/src/trace.rs
+@@ -1,6 +1,7 @@
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++extern crate alloc;
+ 
+ use crate::glue::{
+     CallBigIntTracer, CallFunctionTracer, CallIdTracer, CallObjectTracer,
+@@ -13,27 +14,29 @@ use crate::jsapi::{jsid, JSFunction, JSObject, JSScript, JSString, JSTracer};
+ 
+ use crate::jsapi::JS::{BigInt, JobQueue, Symbol};
+ use crate::jsgc::{Heap, ValueArray};
+-use std::any::TypeId;
+-use std::borrow::Cow;
+-use std::cell::{Cell, RefCell, UnsafeCell};
+-use std::collections::btree_map::BTreeMap;
+-use std::collections::btree_set::BTreeSet;
+-use std::collections::vec_deque::VecDeque;
+-use std::collections::{HashMap, HashSet};
+-use std::hash::{BuildHasher, Hash};
+-use std::num::{
++
++use core::any::TypeId;
++use core::cell::{Cell, RefCell, UnsafeCell};
++use core::hash::Hash;
++use core::num::{
+     NonZeroI128, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroI8, NonZeroIsize, NonZeroU128,
+     NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU8, NonZeroUsize,
+ };
+-use std::ops::Range;
+-use std::path::PathBuf;
+-use std::rc::Rc;
+-use std::sync::atomic::{
++use core::ops::Range;
++use core::sync::atomic::{
+     AtomicBool, AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicIsize, AtomicU16, AtomicU32,
+     AtomicU64, AtomicU8, AtomicUsize,
+ };
+-use std::thread::JoinHandle;
+-use std::time::{Duration, Instant, SystemTime};
++use core::time::Duration;
++
++use alloc::borrow::Cow;
++use alloc::collections::btree_map::BTreeMap;
++use alloc::collections::btree_set::BTreeSet;
++use alloc::collections::vec_deque::VecDeque;
++use alloc::rc::Rc;
++use alloc::string::String;
++use alloc::vec::Vec;
++use alloc::boxed::Box;
+ 
+ /// Types that can be traced.
+ ///
+@@ -228,25 +231,6 @@ unsafe impl<T: Traceable> Traceable for VecDeque<T> {
+     }
+ }
+ 
+-unsafe impl<K: Traceable + Eq + Hash, V: Traceable, S: BuildHasher> Traceable for HashMap<K, V, S> {
+-    #[inline]
+-    unsafe fn trace(&self, trc: *mut JSTracer) {
+-        for (k, v) in &*self {
+-            k.trace(trc);
+-            v.trace(trc);
+-        }
+-    }
+-}
+-
+-unsafe impl<T: Traceable + Eq + Hash, S: BuildHasher> Traceable for HashSet<T, S> {
+-    #[inline]
+-    unsafe fn trace(&self, trc: *mut JSTracer) {
+-        for t in &*self {
+-            t.trace(trc);
+-        }
+-    }
+-}
+-
+ unsafe impl<K: Traceable + Eq + Hash, V: Traceable> Traceable for BTreeMap<K, V> {
+     #[inline]
+     unsafe fn trace(&self, trc: *mut JSTracer) {
+@@ -398,10 +382,8 @@ impl_traceable_simple!(AtomicI8, AtomicI16, AtomicI32, AtomicI64, AtomicIsize);
+ impl_traceable_simple!(AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize);
+ impl_traceable_simple!(Cow<'static, str>);
+ impl_traceable_simple!(TypeId);
+-impl_traceable_simple!(Duration, Instant, SystemTime);
+-impl_traceable_simple!(PathBuf);
++impl_traceable_simple!(Duration);
+ impl_traceable_simple!(Range<u64>);
+-impl_traceable_simple!(JoinHandle<()>);
+ impl_traceable_simple!(*mut JobQueue);
+ 
+ unsafe impl<'a> Traceable for &'a str {
+-- 
+2.48.1
+

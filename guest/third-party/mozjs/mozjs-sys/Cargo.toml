@@ -1,0 +1,46 @@
+[package]
+name = "mozjs_sys"
+description = "System crate for the Mozilla SpiderMonkey JavaScript engine."
+repository.workspace = true
+version = "0.128.13-0"
+authors = ["Mozilla"]
+links = "mozjs"
+license.workspace = true
+exclude = [
+  "mozjs/js/src/tests/**",
+  "mozjs/js/src/octane/**",
+  "mozjs/js/src/jit-test/**",
+  "mozjs/js/src/jsapi-tests/**",
+  "mozjs/js/src/doc/**",
+]
+edition.workspace = true
+
+[lib]
+name = "mozjs_sys"
+# The generated jsapi.rs contains #[doc] strings which look like
+# doctests but are definitely not.
+doctest = false
+
+[features]
+debugmozjs = []
+profilemozjs = []
+jitspew = []
+crown = []
+oom_with_hook = []
+
+[dependencies]
+libc.workspace = true
+# SM depends on them and we provide them using cargo
+libz-sys = { version = "1.1.22", default-features = false, features = ["static"], path="../../libz-sys" }
+encoding_c = { version =  "0.9.8", path = "../../encoding_c" }
+encoding_c_mem = { version = "0.2.6", path = "../../encoding_c_mem" }
+# unicode-bidi-ffi = { path = "./mozjs/intl/bidi/rust/unicode-bidi-ffi" }
+icu_capi = { version = "1.4.0", default_features = false, features = ["compiled_data", "default_components"] } # keep in sync with intl/icu_capi/Cargo.toml
+hashbrown = { version = "0.14", default-features = false, features = ["alloc"] }
+
+[build-dependencies]
+bindgen.workspace = true
+cc.workspace = true
+walkdir = "2"
+flate2 = "1"
+tar = "0.4"

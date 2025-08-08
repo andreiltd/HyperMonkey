@@ -1,0 +1,19 @@
+[package]
+name = "guest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hyperlight-common = { version = "0.7.0", default-features = false }
+hyperlight-guest-bin = { version = "0.7.0", default-features = false }
+hyperlight-guest = "0.7.0"
+
+mozjs_sys = { path = "./third-party/mozjs/mozjs-sys" }
+
+[build-dependencies]
+cc = "1.2.30"
+
+[patch.crates-io]
+hyperlight-common = { git = "https://github.com/andreiltd/hyperlight", rev = "8d8f44b4171d4accb76b2bca69d02ee5a10f6bb3" }
+hyperlight-guest = { git = "https://github.com/andreiltd/hyperlight", rev = "8d8f44b4171d4accb76b2bca69d02ee5a10f6bb3" }
+hyperlight-guest-bin = { git = "https://github.com/andreiltd/hyperlight", rev = "8d8f44b4171d4accb76b2bca69d02ee5a10f6bb3" }

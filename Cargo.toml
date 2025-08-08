@@ -1,0 +1,15 @@
+[package]
+name = "host"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+hyperlight-host = { version = "0.7.0", features = [ "gdb" ] }
+
+[features]
+gdb = []
+crashdump = []
+
+[patch.crates-io]
+hyperlight-host = { git = "https://github.com/andreiltd/hyperlight", rev = "8d8f44b4171d4accb76b2bca69d02ee5a10f6bb3" }

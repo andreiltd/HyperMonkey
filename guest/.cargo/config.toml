@@ -1,0 +1,23 @@
+[build]
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+rustflags = [
+  "-C",
+  "code-model=small",
+  "-C",
+  "linker-plugin-lto"
+]
+linker = "rust-lld"
+
+[profile.release]
+panic = "abort"
+lto = "thin"
+strip = true
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"
+
+[env]
+HYPERLIGHT_GUEST_TOOLCHAIN_ROOT = { value = "third-party/guest-toolchain", relative = true }

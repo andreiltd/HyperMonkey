@@ -1,0 +1,285 @@
+From 43946d95f6c8f0e724b73962882b6d9fda8b2cd3 Mon Sep 17 00:00:00 2001
+From: Tomasz Andrzejak <andreiltd@gmail.com>
+Date: Fri, 8 Aug 2025 13:22:47 +0200
+Subject: [PATCH] feat: add no_std support
+
+---
+ src/lib.rs | 76 ++++++++++++++++++++++++++++--------------------------
+ 1 file changed, 40 insertions(+), 36 deletions(-)
+
+diff --git a/src/lib.rs b/src/lib.rs
+index 699e642..e7c882d 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -7,6 +7,7 @@
+ // option. This file may not be copied, modified, or distributed
+ // except according to those terms.
+ 
++#![no_std]
+ #![doc(html_root_url = "https://docs.rs/encoding_c/0.9.7")]
+ 
+ //! The C API for encoding_rs.
+@@ -44,8 +45,10 @@
+ //! 8 indicate the length of the malformed byte sequence (possible decimal
+ //! values 1, 2, 3 or 4). The maximum possible sum of the two is 6.
+ 
++extern crate alloc;
+ extern crate encoding_rs;
+ 
++use alloc::boxed::Box;
+ use encoding_rs::*;
+ 
+ /// Return value for `*_decode_*` and `*_encode_*` functions that indicates that
+@@ -61,6 +64,7 @@ pub const OUTPUT_FULL: u32 = 0xFFFFFFFF;
+ 
+ /// Newtype for `*const Encoding` in order to be able to implement `Sync` for
+ /// it.
++#[allow(dead_code)]
+ pub struct ConstEncoding(*const Encoding);
+ 
+ /// Required for `static` fields.
+@@ -263,7 +267,7 @@ fn encoder_result_to_u32(result: EncoderResult) -> u32 {
+ #[inline(always)]
+ fn option_to_ptr(opt: Option<&'static Encoding>) -> *const Encoding {
+     match opt {
+-        None => ::std::ptr::null(),
++        None => core::ptr::null(),
+         Some(e) => e,
+     }
+ }
+@@ -297,7 +301,7 @@ fn option_to_ptr(opt: Option<&'static Encoding>) -> *const Encoding {
+ /// of if `label` is `NULL`.
+ #[no_mangle]
+ pub unsafe extern "C" fn encoding_for_label(label: *const u8, label_len: usize) -> *const Encoding {
+-    let label_slice = ::std::slice::from_raw_parts(label, label_len);
++    let label_slice = core::slice::from_raw_parts(label, label_len);
+     option_to_ptr(Encoding::for_label(label_slice))
+ }
+ 
+@@ -333,7 +337,7 @@ pub unsafe extern "C" fn encoding_for_label_no_replacement(
+     label: *const u8,
+     label_len: usize,
+ ) -> *const Encoding {
+-    let label_slice = ::std::slice::from_raw_parts(label, label_len);
++    let label_slice = core::slice::from_raw_parts(label, label_len);
+     option_to_ptr(Encoding::for_label_no_replacement(label_slice))
+ }
+ 
+@@ -362,10 +366,10 @@ pub unsafe extern "C" fn encoding_for_bom(
+     buffer: *const u8,
+     buffer_len: *mut usize,
+ ) -> *const Encoding {
+-    let buffer_slice = ::std::slice::from_raw_parts(buffer, *buffer_len);
++    let buffer_slice = core::slice::from_raw_parts(buffer, *buffer_len);
+     let (encoding, bom_length) = match Encoding::for_bom(buffer_slice) {
+         Some((encoding, bom_length)) => (encoding as *const Encoding, bom_length),
+-        None => (::std::ptr::null(), 0),
++        None => (core::ptr::null(), 0),
+     };
+     *buffer_len = bom_length;
+     encoding
+@@ -387,7 +391,7 @@ pub unsafe extern "C" fn encoding_for_bom(
+ #[no_mangle]
+ pub unsafe extern "C" fn encoding_name(encoding: *const Encoding, name_out: *mut u8) -> usize {
+     let bytes = (*encoding).name().as_bytes();
+-    ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), name_out, bytes.len());
++    core::ptr::copy_nonoverlapping(bytes.as_ptr(), name_out, bytes.len());
+     bytes.len()
+ }
+ 
+@@ -621,7 +625,7 @@ pub unsafe extern "C" fn encoding_new_encoder_into(
+ /// block of if `buffer` is `NULL`.
+ #[no_mangle]
+ pub unsafe extern "C" fn encoding_utf8_valid_up_to(buffer: *const u8, buffer_len: usize) -> usize {
+-    let buffer_slice = ::std::slice::from_raw_parts(buffer, buffer_len);
++    let buffer_slice = core::slice::from_raw_parts(buffer, buffer_len);
+     Encoding::utf8_valid_up_to(buffer_slice)
+ }
+ 
+@@ -641,7 +645,7 @@ pub unsafe extern "C" fn encoding_utf8_valid_up_to(buffer: *const u8, buffer_len
+ /// block of if `buffer` is `NULL`.
+ #[no_mangle]
+ pub unsafe extern "C" fn encoding_ascii_valid_up_to(buffer: *const u8, buffer_len: usize) -> usize {
+-    let buffer_slice = ::std::slice::from_raw_parts(buffer, buffer_len);
++    let buffer_slice = core::slice::from_raw_parts(buffer, buffer_len);
+     Encoding::ascii_valid_up_to(buffer_slice)
+ }
+ 
+@@ -665,7 +669,7 @@ pub unsafe extern "C" fn encoding_iso_2022_jp_ascii_valid_up_to(
+     buffer: *const u8,
+     buffer_len: usize,
+ ) -> usize {
+-    let buffer_slice = ::std::slice::from_raw_parts(buffer, buffer_len);
++    let buffer_slice = core::slice::from_raw_parts(buffer, buffer_len);
+     Encoding::iso_2022_jp_ascii_valid_up_to(buffer_slice)
+ }
+ 
+@@ -710,7 +714,7 @@ pub unsafe extern "C" fn decoder_max_utf8_buffer_length(
+ ) -> usize {
+     (*decoder)
+         .max_utf8_buffer_length(byte_length)
+-        .unwrap_or(::std::usize::MAX)
++        .unwrap_or(usize::MAX)
+ }
+ 
+ /// Query the worst-case UTF-8 output size _without replacement_.
+@@ -733,7 +737,7 @@ pub unsafe extern "C" fn decoder_max_utf8_buffer_length_without_replacement(
+ ) -> usize {
+     (*decoder)
+         .max_utf8_buffer_length_without_replacement(byte_length)
+-        .unwrap_or(::std::usize::MAX)
++        .unwrap_or(usize::MAX)
+ }
+ 
+ /// Incrementally decode a byte stream into UTF-8 with malformed sequences
+@@ -765,8 +769,8 @@ pub unsafe extern "C" fn decoder_decode_to_utf8(
+     last: bool,
+     had_replacements: *mut bool,
+ ) -> u32 {
+-    let src_slice = ::std::slice::from_raw_parts(src, *src_len);
+-    let dst_slice = ::std::slice::from_raw_parts_mut(dst, *dst_len);
++    let src_slice = core::slice::from_raw_parts(src, *src_len);
++    let dst_slice = core::slice::from_raw_parts_mut(dst, *dst_len);
+     let (result, read, written, replaced) = (*decoder).decode_to_utf8(src_slice, dst_slice, last);
+     *src_len = read;
+     *dst_len = written;
+@@ -801,8 +805,8 @@ pub unsafe extern "C" fn decoder_decode_to_utf8_without_replacement(
+     dst_len: *mut usize,
+     last: bool,
+ ) -> u32 {
+-    let src_slice = ::std::slice::from_raw_parts(src, *src_len);
+-    let dst_slice = ::std::slice::from_raw_parts_mut(dst, *dst_len);
++    let src_slice = core::slice::from_raw_parts(src, *src_len);
++    let dst_slice = core::slice::from_raw_parts_mut(dst, *dst_len);
+     let (result, read, written) =
+         (*decoder).decode_to_utf8_without_replacement(src_slice, dst_slice, last);
+     *src_len = read;
+@@ -831,7 +835,7 @@ pub unsafe extern "C" fn decoder_max_utf16_buffer_length(
+ ) -> usize {
+     (*decoder)
+         .max_utf16_buffer_length(u16_length)
+-        .unwrap_or(::std::usize::MAX)
++        .unwrap_or(usize::MAX)
+ }
+ 
+ /// Incrementally decode a byte stream into UTF-16 with malformed sequences
+@@ -863,8 +867,8 @@ pub unsafe extern "C" fn decoder_decode_to_utf16(
+     last: bool,
+     had_replacements: *mut bool,
+ ) -> u32 {
+-    let src_slice = ::std::slice::from_raw_parts(src, *src_len);
+-    let dst_slice = ::std::slice::from_raw_parts_mut(dst, *dst_len);
++    let src_slice = core::slice::from_raw_parts(src, *src_len);
++    let dst_slice = core::slice::from_raw_parts_mut(dst, *dst_len);
+     let (result, read, written, replaced) = (*decoder).decode_to_utf16(src_slice, dst_slice, last);
+     *src_len = read;
+     *dst_len = written;
+@@ -899,8 +903,8 @@ pub unsafe extern "C" fn decoder_decode_to_utf16_without_replacement(
+     dst_len: *mut usize,
+     last: bool,
+ ) -> u32 {
+-    let src_slice = ::std::slice::from_raw_parts(src, *src_len);
+-    let dst_slice = ::std::slice::from_raw_parts_mut(dst, *dst_len);
++    let src_slice = core::slice::from_raw_parts(src, *src_len);
++    let dst_slice = core::slice::from_raw_parts_mut(dst, *dst_len);
+     let (result, read, written) =
+         (*decoder).decode_to_utf16_without_replacement(src_slice, dst_slice, last);
+     *src_len = read;
+@@ -935,8 +939,8 @@ pub unsafe extern "C" fn decoder_latin1_byte_compatible_up_to(
+     buffer_len: usize,
+ ) -> usize {
+     (*decoder)
+-        .latin1_byte_compatible_up_to(::std::slice::from_raw_parts(buffer, buffer_len))
+-        .unwrap_or(::std::usize::MAX)
++        .latin1_byte_compatible_up_to(core::slice::from_raw_parts(buffer, buffer_len))
++        .unwrap_or(usize::MAX)
+ }
+ 
+ /// Deallocates an `Encoder` previously allocated by `encoding_new_encoder()`.
+@@ -984,7 +988,7 @@ pub unsafe extern "C" fn encoder_max_buffer_length_from_utf8_if_no_unmappables(
+ ) -> usize {
+     (*encoder)
+         .max_buffer_length_from_utf8_if_no_unmappables(byte_length)
+-        .unwrap_or(::std::usize::MAX)
++        .unwrap_or(usize::MAX)
+ }
+ 
+ /// Query the worst-case output size when encoding from UTF-8 without
+@@ -1000,7 +1004,7 @@ pub unsafe extern "C" fn encoder_max_buffer_length_from_utf8_without_replacement
+ ) -> usize {
+     (*encoder)
+         .max_buffer_length_from_utf8_without_replacement(byte_length)
+-        .unwrap_or(::std::usize::MAX)
++        .unwrap_or(usize::MAX)
+ }
+ 
+ /// Incrementally encode into byte stream from UTF-8 with unmappable
+@@ -1035,9 +1039,9 @@ pub unsafe extern "C" fn encoder_encode_from_utf8(
+     last: bool,
+     had_replacements: *mut bool,
+ ) -> u32 {
+-    let src_slice = ::std::slice::from_raw_parts(src, *src_len);
+-    let string = ::std::str::from_utf8_unchecked(src_slice);
+-    let dst_slice = ::std::slice::from_raw_parts_mut(dst, *dst_len);
++    let src_slice = core::slice::from_raw_parts(src, *src_len);
++    let string = core::str::from_utf8_unchecked(src_slice);
++    let dst_slice = core::slice::from_raw_parts_mut(dst, *dst_len);
+     let (result, read, written, replaced) = (*encoder).encode_from_utf8(string, dst_slice, last);
+     *src_len = read;
+     *dst_len = written;
+@@ -1075,9 +1079,9 @@ pub unsafe extern "C" fn encoder_encode_from_utf8_without_replacement(
+     dst_len: *mut usize,
+     last: bool,
+ ) -> u32 {
+-    let src_slice = ::std::slice::from_raw_parts(src, *src_len);
+-    let string = ::std::str::from_utf8_unchecked(src_slice);
+-    let dst_slice = ::std::slice::from_raw_parts_mut(dst, *dst_len);
++    let src_slice = core::slice::from_raw_parts(src, *src_len);
++    let string = core::str::from_utf8_unchecked(src_slice);
++    let dst_slice = core::slice::from_raw_parts_mut(dst, *dst_len);
+     let (result, read, written) =
+         (*encoder).encode_from_utf8_without_replacement(string, dst_slice, last);
+     *src_len = read;
+@@ -1099,7 +1103,7 @@ pub unsafe extern "C" fn encoder_max_buffer_length_from_utf16_if_no_unmappables(
+ ) -> usize {
+     (*encoder)
+         .max_buffer_length_from_utf16_if_no_unmappables(u16_length)
+-        .unwrap_or(::std::usize::MAX)
++        .unwrap_or(usize::MAX)
+ }
+ 
+ /// Query the worst-case output size when encoding from UTF-16 without
+@@ -1115,7 +1119,7 @@ pub unsafe extern "C" fn encoder_max_buffer_length_from_utf16_without_replacemen
+ ) -> usize {
+     (*encoder)
+         .max_buffer_length_from_utf16_without_replacement(u16_length)
+-        .unwrap_or(::std::usize::MAX)
++        .unwrap_or(usize::MAX)
+ }
+ 
+ /// Incrementally encode into byte stream from UTF-16 with unmappable
+@@ -1147,8 +1151,8 @@ pub unsafe extern "C" fn encoder_encode_from_utf16(
+     last: bool,
+     had_replacements: *mut bool,
+ ) -> u32 {
+-    let src_slice = ::std::slice::from_raw_parts(src, *src_len);
+-    let dst_slice = ::std::slice::from_raw_parts_mut(dst, *dst_len);
++    let src_slice = core::slice::from_raw_parts(src, *src_len);
++    let dst_slice = core::slice::from_raw_parts_mut(dst, *dst_len);
+     let (result, read, written, replaced) =
+         (*encoder).encode_from_utf16(src_slice, dst_slice, last);
+     *src_len = read;
+@@ -1184,8 +1188,8 @@ pub unsafe extern "C" fn encoder_encode_from_utf16_without_replacement(
+     dst_len: *mut usize,
+     last: bool,
+ ) -> u32 {
+-    let src_slice = ::std::slice::from_raw_parts(src, *src_len);
+-    let dst_slice = ::std::slice::from_raw_parts_mut(dst, *dst_len);
++    let src_slice = core::slice::from_raw_parts(src, *src_len);
++    let dst_slice = core::slice::from_raw_parts_mut(dst, *dst_len);
+     let (result, read, written) =
+         (*encoder).encode_from_utf16_without_replacement(src_slice, dst_slice, last);
+     *src_len = read;
+-- 
+2.48.1
+
