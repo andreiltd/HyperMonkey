@@ -1,0 +1,4 @@
+Base commits:
+
+https://github.com/servo/mozjs/commit/128e1e230a0155ed9395c718184f34bddc045860
+https://github.com/rust-lang/libz-sys/commit/1c2c7b04f585f86d9bd203bccf631a5dc2bdabc4
